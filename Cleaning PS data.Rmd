@@ -1,0 +1,617 @@
+---
+title: "Cleaning PS Data"
+author: "Leigh Allison"
+date: "February 22, 2017"
+output:
+  html_document: default
+  pdf_document: default
+---
+First we need to tell R where are the data files are stored. 
+```{r}
+setwd("C:/Users/laalliso/Dropbox/Graduate School/02 General Exam/PCA Analysis in R")
+```
+
+#Importing Data
+I have subsetted the data from the Wave 6 WVS based on the integrated code book. In total there are 109 variables, there are only ___ questions. A couple of questions have two variables associated with them which will be explained later. 
+```{r}
+PS_data <- read.csv("PSWVS_Wave6.csv")
+```
+
+Right now, each row in the data file represents an indvidual response. In order to show national trends, each response needs to be condensed (aggregated) into one national metric. The metric used depends on the type of question. For categorical data, the national statistic is a mode or median (if the data is also ordinal).A mean is not possible; however if the question asks for a response on a likert scale, a national average is possible; however, individuals view the scale of a likert scale differently. It is also important to consider that after these metrics are created, they will be used in a principle component analysis and should therefore be on similar scale. One way to do this is to make the a national precentage of individuals that answer a certain way. First you can determine what the most popular answer is and then determine the precentage of individuals who responded that way. 
+
+The following subset of questions have categorical responses and therefore should have the mode calculated. The V2 Column is the country code
+
+```{r}
+Categorical_subset <- PS_data[,c("V2","V258","V60","V61")]
+Ordinal_subset <- PS_data[,c("V2","V258","V95","V96")]
+#Add country names to PS_subset. We need the names in order to merge it with the world map data 
+Country_Names <-read.csv("Country_Code_Names.csv")
+```
+
+#Cleaning Data
+This data was coded with numbers to represent why a response is missing. For example, -5 means missing or inapporiate response, while -4 respresents not asked in that survey.  I will convert those values back to NA so that they are not included in the mode calculation. For these questions codes -5, -4, -3, and -2 are all NA. -1 is Don't know and was left in the survey responses as -1.
+```{r}
+# Install and load the car package which contains the code that recodes cells and returns an updated dataframe
+install.packages("car", repos = 'http://cran.us.r-project.org')
+library(car)
+```
+
+```{r}
+# I created a function which will convert the missing values to NA using the recode function. Then I use the apply function to apply the function to every column in the dataframe
+
+RecodetoNA<- function(QuestionColName){
+  QuestionColName<- recode(QuestionColName, "c(-5, -4, -3, -2)= NA")
+  }
+
+Updated_Categorical_data <- as.data.frame(apply(Categorical_subset,2,RecodetoNA))
+
+Updated_Ordinal_data <- as.data.frame(apply(Ordinal_subset,2,RecodetoNA))
+```
+
+#Calculating Mode for Categorical Questions
+Now the mode of each column can be computed by country. Each column represents a question. R does not have a built in mode function. Therefore, it must be created with a series of other functions. In this first function we are summing the weights for each response The function returns a dataframe with the number of responses for each category. Each category/response is a column and the rows are countries - Note you must use the function in combination with the aggregate function in order to have the rows to be countries. Therefore, when we apply this function to the all the questions we must use a for loop. 
+
+```{r}
+# The table function counts the number of responses of each types
+# the sort function sorts the table from low to high
+# the tail functions gives you the last column or the highest count response
+
+Mode <- function(aColumn){
+  mode=names(tail(sort(table(aColumn)),1))
+  return(mode)
+}
+
+#In order to create a dataframe for each column aggregated by country - we need a more advanced function. We establish. The Global_Mode_Calculation below provides a single dataframe representing one quesiton. 
+
+Global_Mode_Calc <- function(aColumn){
+  miss=0
+  r1=0
+  r2=0
+  r3=0
+  r4=0
+  rneg1=0
+  
+  count =1
+  
+  for (value in aColumn){
+    if(is.na(value)){
+      miss = miss + 1
+      next
+    }
+    if(value == 1){
+      r1 = r1 + Updated_Categorical_data$V258[count]
+      next
+    }
+    if(value == 2){
+      r2 = r2 + Updated_Categorical_data$V258[count]
+      next
+    }
+    if(value == 3){
+      r3 = r3 + Updated_Categorical_data$V258[count]
+      next
+    }
+    if(value == 4){
+      r4 = r4 + Updated_Categorical_data$V258[count]
+      next
+    }
+    if(value == -1){
+      rneg1 = rneg1 + Updated_Categorical_data$V258[count]
+      next
+    }
+    count = count + 1
+  }
+
+sumbyresponse <-rbind(r1, r2, r3, r4, rneg1, miss)
+return(sumbyresponse)
+}
+```
+
+Now that the responses are aggregated by response, we need to use a for loop to apply the aggregate function to each column to determine the mode of these new dataframe - this will give us a list the global modes for each column. Each column represents a single question.
+```{r}
+Mode_Question_Column_Names=names(Updated_Categorical_data)[c(3:4)]
+PS_Percent_Mode_data <-data.frame()
+
+for(col in Mode_Question_Column_Names){
+  sumbyresponse_all <- aggregate(Updated_Categorical_data[,col], 
+          by=list(Updated_Categorical_data$V2), 
+          Global_Mode_Calc)
+  
+  global_sums <- apply(sumbyresponse_all, 2, sum) # now there is only one row with the sum for each category
+  global_mode_value <- global_sums[which.max(global_sums)] # value of maximum category for world
+  #print(global_mode_value)
+  global_mode_name <- rownames(as.data.frame(global_sums[which.max(global_sums)]))
+  # gives me the name of the column of the maximium
+  #print(global_mode_name)
+  
+# Now that we know the global mode, we need to calculate the percentage of individuals in each country which also responded to   the global mean. We will do this by telling R to chose the column which matches the global mean - sum the amount of weighted responses and then divide by the total number of responses
+  
+  #Summing rows in order to determine the total number of responses per country
+  country_sums <- as.data.frame(apply(sumbyresponse_all, 1, sum)) 
+  precentages <-data.frame()
+
+  for(i in 1:60){
+  percent <- round(sumbyresponse_all$x[i,]/country_sums[i,]*100,3)
+  precentages <- rbind(precentages, percent)
+  }
+
+  colnames(precentages) <- c("1", "2", "3", "4", "5", "6")
+  Mode_Percentage <- precentages 
+
+  #now need to store the global mode column for the question in a final dataframe 
+  #install.packages("stringi")
+  library(stringi)     
+  pattern = "\\d+"
+
+  col=stri_extract_first_regex(global_mode_name,pattern)
+
+  Percent_Column_Names = names(Mode_Percentage)
+
+  for(i in Percent_Column_Names){
+    if (i == col) {
+      PS_Percent_Mode_data <- rbind(PS_Percent_Mode_data, Mode_Percentage[[i]])
+      }
+    }
+  country_codes <- sumbyresponse_all$Group.1
+  names(PS_Percent_Mode_data)<-country_codes
+} #ending analysis of one question looping back to start another
+```
+
+Transpose the data so that the countrys are rows and the questions are columns 
+```{r}
+PS_Percent_Mode_data <-t(PS_Percent_Mode_data)
+colnames(PS_Percent_Mode_data) <- c("V60","V61")
+```
+
+#Calculating Median for Ordinal Questions
+Not all questions in the WVS have categorical responses. Some questions ask respondants to respond on a likert scale. While finding the mode of this data is helpful, the median gives a better idea representation of the data. We calculated both in order to get a better understanding of the data. 
+
+First we need to aggregate the data into weighted sums for each country. The Weighted_Sums_Likerts function returns a dataframe with countries as the rows and the columns as the response categories 1 to 10 and then -1 which is "I don't know" and NA. We will use this information to calculate the weighted median and mode. 
+
+Also need to make a subset that has removed the converted -1 to NA. This will be used for the median
+```{r}
+Weighted_Sums_Likert_subset <- function(aColumn){
+ 
+  miss=0
+  r1=0
+  r2=0
+  r3=0
+  r4=0
+  r5=0
+  r6=0
+  r7=0
+  r8=0
+  r9=0
+  r10=0
+  rneg1=0
+  
+  count = 1
+  
+for (value in aColumn){
+    
+    if(is.na(value)){
+      miss = miss + Updated_Ordinal_data$V258[count]
+      next
+    }
+    if(value == 1){
+      r1 = r1 + Updated_Ordinal_data$V258[count]
+      next
+    }
+    if(value == 2){
+      r2 = r2 + Updated_Ordinal_data$V258[count]
+      next
+    }
+    if(value == 3){
+      r3 = r3 + Updated_Ordinal_data$V258[count]
+      next
+    }
+    if(value == 4){
+      r4 = r4 + Updated_Ordinal_data$V258[count]
+      next
+    }
+    if(value == 5){
+      r5 = r5 + Updated_Ordinal_data$V258[count]
+      next
+    }
+    if(value == 6){
+      r6 = r6 + Updated_Ordinal_data$V258[count]
+      next
+    }
+    if(value == 7){
+      r7 = r7 + Updated_Ordinal_data$V258[count]
+      next
+    }
+    if(value == 8){
+      r8 = r8 + Updated_Ordinal_data$V258[count]
+      next
+    }
+    if(value == 9){
+      r9 = r9 + Updated_Ordinal_data$V258[count]
+      next
+    }
+    if(value == 10){
+      r10 = r10 + Updated_Ordinal_data$V258[count]
+      next
+    }
+    if(value == -1){
+      rneg1 = rneg1 + Updated_Ordinal_data$V258[count]
+      next
+    }
+    count = count + 1
+  }
+  
+  dataofresponses_subset<-cbind(r1, r2, r3, r4, r5, r6, r7, r8, r9, r10) 
+  
+  #each column is a response sum, each row is coutry
+  return(dataofresponses_subset)
+}
+```
+
+To determine the median of the Oridnal questions, we will use the following function and loops. 
+```{r}
+Ordinal_Question_Column_Names = names(Updated_Ordinal_data)[c(3:4)]
+PS_Medians <-data.frame(country_codes)
+# Show the mode for each question by country 
+  for(col in Ordinal_Question_Column_Names){
+        dataofresponses_country_subset <- aggregate(Updated_Ordinal_data[,col], 
+                                   by=list(Updated_Ordinal_data$V2), 
+                                   Weighted_Sums_Likert_subset)
+    #Summing rows in order to determine the total number of responses per country
+    country_sums_subset <- as.data.frame(apply(dataofresponses_country_subset$x, 1, sum)) 
+
+    Ordinal_Precentages <-data.frame()
+
+    for(i in 1:60){
+        percent <- round(dataofresponses_country_subset$x[i,]/country_sums_subset[i,]*100,3)
+        Ordinal_Precentages <- rbind(Ordinal_Precentages, percent)
+        }
+    #Adding column names to the precentage calculations
+    colnames(Ordinal_Precentages) <- c("1", "2", "3", "4", "5", "6", "7", "8", "9", "10")
+    #In order to determine the median we are going to use the cummulative sum function
+    Cummulative_Sums <- apply(Ordinal_Precentages, 1, cumsum)
+    colnames(Cummulative_Sums)<-country_codes
+    Cummulative_Sums <-as.data.frame(Cummulative_Sums)
+
+    #to determine the median we need the first value above 50%
+    Cummulative_Sums_Column_Names <- country_codes
+    Cummulative_Sums_subset <-t(na.omit(t(Cummulative_Sums)))
+    Cummulative_Sums_subset_Names<-colnames(Cummulative_Sums_subset)
+
+    Ordinal_Medians <-data.frame()
+    Manual_Median <- function (aColumn) {
+      for(i in 1:10){  
+        if(aColumn[i] >= 50){
+            Country_Median <- i
+            Ordinal_Medians <- rbind(Ordinal_Medians, Country_Median)
+            break
+            }
+      }
+    return(Ordinal_Medians)
+    }
+
+    Ordinal_Median_Country <- as.data.frame(t(as.data.frame(apply(Cummulative_Sums_subset, 2, Manual_Median))))
+    rownames(Ordinal_Median_Country) <- Cummulative_Sums_subset_Names
+    
+    PS_Medians <- merge(PS_Medians, Ordinal_Median_Country, by.x="country_codes", by.y=0, all = TRUE)
+}#ending for loop to start a new question 
+colnames(PS_Medians)<-c("Country Codes", Ordinal_Question_Column_Names)
+```
+
+It is also interesting to see the mode of the ordinal data, particularly since many of the questions have high "I don't know responses" - this code calculates the mode of each country for each question and returns the percentage of people in that category. I wanted to keep -1 and NA in these caluculations.
+
+```{r}
+Weighted_Sums_Likert <- function(aColumn){
+  miss=0
+  r1=0
+  r2=0
+  r3=0
+  r4=0
+  r5=0
+  r6=0
+  r7=0
+  r8=0
+  r9=0
+  r10=0
+  rneg1=0
+  
+  count = 1
+  
+for (value in aColumn){
+    
+    if(is.na(value)){
+      miss = miss + Updated_Ordinal_data$V258[count]
+      next
+    }
+    if(value == 1){
+      r1 = r1 + Updated_Ordinal_data$V258[count]
+      next
+    }
+    if(value == 2){
+      r2 = r2 + Updated_Ordinal_data$V258[count]
+      next
+    }
+    if(value == 3){
+      r3 = r3 + Updated_Ordinal_data$V258[count]
+      next
+    }
+    if(value == 4){
+      r4 = r4 + Updated_Ordinal_data$V258[count]
+      next
+    }
+    if(value == 5){
+      r5 = r5 + Updated_Ordinal_data$V258[count]
+      next
+    }
+    if(value == 6){
+      r6 = r6 + Updated_Ordinal_data$V258[count]
+      next
+    }
+    if(value == 7){
+      r7 = r7 + Updated_Ordinal_data$V258[count]
+      next
+    }
+    if(value == 8){
+      r8 = r8 + Updated_Ordinal_data$V258[count]
+      next
+    }
+    if(value == 9){
+      r9 = r9 + Updated_Ordinal_data$V258[count]
+      next
+    }
+    if(value == 10){
+      r10 = r10 + Updated_Ordinal_data$V258[count]
+      next
+    }
+    if(value == -1){
+      rneg1 = rneg1 + Updated_Ordinal_data$V258[count]
+      next
+    }
+    count = count + 1
+  }
+  
+  dataofresponses <-cbind(r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, rneg1, miss) 
+  #each column is a response sum, each row is coutry
+  return(dataofresponses)
+}
+PS_Percent_Ordinal_Mode_data <-data.frame()
+
+# Show the mode for each question by country 
+  for(col in Ordinal_Question_Column_Names){
+    
+    dataofresponses_country <- aggregate(Updated_Ordinal_data[,col], 
+                                   by=list(Updated_Ordinal_data$V2), 
+                                   Weighted_Sums_Likert)
+    #this creates a dataframe with countries as rows and responses as columns 
+    #need to determine the mode in each row
+    max(dataofresponses_country$x[1,])
+    which.max(dataofresponses_country$x[1,])
+    
+    #this creates a dataframe with the name of the mode response for each country 
+    ordinal_mode_name <- as.data.frame(apply(dataofresponses_country$x, 1, which.max))
+    
+    #this creates a dataframe with the value of the mode for each country 
+    ordinal_mode_value <- as.data.frame(apply(dataofresponses_country$x, 1, max))
+    
+    #Summing rows in order to determine the total number of responses per country
+    country_sums <- as.data.frame(apply(dataofresponses_country$x, 1, sum)) 
+
+    Ordinal_Mode_precentages <-data.frame()
+
+    for(i in 1:60){
+    Ordinal_mode_precent<- round(ordinal_mode_value[i, ]/country_sums[i,]*100,3)
+    Ordinal_Mode_precentages <- rbind(Ordinal_Mode_precentages, Ordinal_mode_precent)
+    }
+}
+  colnames(Ordinal_Mode_precentages) <-c("V95")
+  country_codes <- dataofresponses_country$Group.1
+  rownames(Ordinal_Mode_precentages)<-country_codes
+
+#So that we know what the percentages represent let's bind the percentages with the names
+  
+Ordinal_Mode_Percentages <- cbind(Ordinal_Mode_precentages, ordinal_mode_name)
+Ordinal_Mode_Percentages<- merge(Ordinal_Mode_Percentages, Country_Names, by.x=0, by.y="Country.Code", all.x=T)
+#Make into csv file for bivariate visualization in tableau
+write.csv(Ordinal_Mode_Percentages, file = "Ordinal_Mode_Percentages.csv")
+```
+
+
+# Mapping Data
+## Mode
+Now we can put the each question on to a map - cannot put more than one question because it wouldn't really make sense. 
+```{r, eval=FALSE}
+
+Named_data <- merge(Country_Names, PS_Percent_Mode_data, by.x = "Country.Code", by.y = 0)
+
+install.packages("maptools")
+library(maptools)
+
+folder="Data"
+fileName="TM_WORLD_BORDERS-0.3.shp"
+fileSHP=file.path(folder,fileName) 
+Worldmap = readShapeSpatial(fileSHP) 
+
+#to see the world map
+plot(Worldmap)
+```
+Need to match the country names (spelling and formating exactly)
+```{r, eval=FALSE}
+#only 55 countries were retained in merge. We will have to change how the names of countries are written
+#to make the match
+write.csv(Mappable_mode_data@data, file="Worldmap Countries.csv") #to compare countries names
+
+```
+Finish mapping
+```{r, eval=FALSE}
+#Now we merge the question data with the world map data. The map data must be first in the merge)
+Mappable_mode_data <- merge( Worldmap,Named_data, by.x = "NAME", by.y = "Country.Title", all.x=T)
+head(Mappable_mode_data@data)
+
+install.packages("RColorBrewer")
+library(RColorBrewer)
+
+install.packages("classInt")
+library(classInt)
+
+Map_Mode_Questions <- colnames(Mappable_mode_data@data)[c(13:14)]
+WVS_Question_Names <- c("V60", "V61")
+par(mfrow = (c(1,1)))
+counter = 1
+
+for(i in Map_Mode_Questions) {
+#Set up plot to only plot one question each time
+varToPLot=Mappable_mode_data@data[[i]]
+numberOfClasses = 5
+colorForScale='Reds'
+title=WVS_Question_Names[counter]
+
+colors <- brewer.pal(numberOfClasses, colorForScale)
+intervals <- classIntervals(varToPLot, numberOfClasses, style = "quantile", dataPrecision=2)
+colorPallette <- findColours(intervals, colors)
+
+# Now to plot
+plot(Mappable_mode_data, col = colorPallette, main=title)
+legend(45, -10, legend = names(attr(colorPallette, "table")), fill = attr(colorPallette, "palette"), 
+       cex = 0.70, bty = "n")
+counter=counter+1
+}
+```
+
+
+#Analytics (Principal Component Analysis)
+
+We will have to make two different sets of principle components because the ordinal and categorical variables are currently on different scales. Since PCA uses a correlation matrix, all the variables need to be measured on the same scale. 
+
+##PCA for Categorical Variables
+```{r}
+PCA_PS_Categorical_Questions<- princomp(PS_Percent_Mode_data, cor = T )
+summary(PCA_PS_Categorical_Questions)
+PS_Mode_Scores <- PCA_PS_Categorical_Questions$scores
+PS_Mode_Loadings <- PCA_PS_Categorical_Questions$loadings
+
+```
+To map the component scores...
+```{r, eval=FALSE}
+#Merge PC and Map data
+Mode_PC_data <-as.data.frame(PCA_PS_Mode_questions$scores)
+Mode_PC_data <- cbind(Mode_PC_data, country_codes)
+
+Country_Names <-read.csv("Country_Code_Names.csv")
+Named_PC_data <- merge(Country_Names, Mode_PC_data, by.x = "Country.Code", by.y = "country_codes")
+
+#Now we merge the question data with the world map data. The map data must be first in the merge)
+Mappable_PCmode_data <- merge(Worldmap,Named_PC_data, by.x = "NAME", by.y = "Country.Title", all.x=T)
+head(Mappable_PCmode_data@data)
+
+Map_PC_Mode <- colnames(Mode_PC_data)
+par(mfrow = (c(1,1)))
+counter = 1
+
+for(i in Map_PC_Mode) {
+#Set up plot to only plot one question each time
+varToPLot=Mappable_PCmode_data@data[[i]]
+numberOfClasses = 3
+colorForScale='Blues'
+title = Map_PC_Mode[counter]
+
+colors <- brewer.pal(numberOfClasses, colorForScale)
+intervals <- classIntervals(varToPLot, numberOfClasses, style = "quantile", dataPrecision=2)
+colorPallette <- findColours(intervals, colors)
+
+# Now to plot
+plot(Mappable_mode_data, col = colorPallette, main=title)
+legend(45, -10, legend = names(attr(colorPallette, "table")), fill = attr(colorPallette, "palette"), cex = 0.70, bty = "n")
+
+counter=counter+1
+}
+```
+
+
+#Scree Plot 
+Now instead of mapping it I'd like to look at a Screeplot and scatterplot of the Principle Components to get a sense for what the components mean. It is also helpful to look at the loadings. 
+```{r}
+plot(PCA_PS_Categorical_Questions, main = "ScreePlot", type = "b")
+abline(h=1, col = "Red")
+```
+#Principle Component Score Plot (Mode)
+Now to look at the PC scores for each country
+```{r, eval=FALSE}
+plot(PS_Mode_Scores[,1:2], type = "p", main = "Standarized Component Score Data")
+text(PS_Mode_Scores[,1:2], labels = rownames(PS_Mode_Scores), cex=0.7, adj =1.5)
+grid(10,10)
+```
+
+
+
+##PCA for Ordinal Variables
+```{r}
+rownames(PS_Medians)<-PS_Medians[,1]
+PS_Medians_Subset<-na.omit(PS_Medians[,c(2:3)])
+
+PCA_PS_Ordinal_questions<- princomp(PS_Medians_Subset, cor = T )
+summary(PCA_PS_Ordinal_questions)
+PS_Median_Scores <- PCA_PS_Ordinal_questions$scores
+PS_Median_Loadings <-PCA_PS_Ordinal_questions$loadings
+
+```
+
+#World Map of Principal Component Scores
+To map the component scores...
+```{r, eval=FALSE}
+#Merge PC and Map data
+PS_Median_Scores <-as.data.frame(PS_Median_Scores)
+Country_Names <-read.csv("Country_Code_Names.csv")
+
+PS_Median_Scores <- merge(Country_Names, PS_Median_Scores, by.x = "Country.Code", by.y = 0)
+
+#Now we merge the question data with the world map data. The map data must be first in the merge)
+Mappable_PS_Median_Scores <- merge(Worldmap,PS_Median_Scores, by.x = "NAME", by.y = "Country.Title", all.x=T)
+head(Mappable_PS_Median_Scores@data)
+
+PS_Median_Scores_Names <- colnames(PS_Median_Scores[,c(3:4)])
+par(mfrow = (c(1,1)))
+counter = 1
+
+for(i in PS_Median_Scores_Names) {
+#Set up plot to only plot one question each time
+varToPLot=Mappable_PS_Median_Scores@data[[i]]
+numberOfClasses = 3
+colorForScale='Blues'
+title = PS_Median_Scores_Names[counter]
+
+colors <- brewer.pal(numberOfClasses, colorForScale)
+intervals <- classIntervals(varToPLot, numberOfClasses, style = "quantile", dataPrecision=2)
+colorPallette <- findColours(intervals, colors)
+
+# Now to plot
+plot(Mappable_PS_Median_Scores, col = colorPallette, main=title)
+legend(45, -10, legend = names(attr(colorPallette, "table")), fill = attr(colorPallette, "palette"), cex = 0.70, bty = "n")
+
+counter=counter+1
+}
+```
+
+#Scree Plot
+Now instead of mapping it I'd like to look at a Screeplot and scatterplot of the Principle Components to get a sense for what the components mean. It is also helpful to look at the loadings. Sp we will reference the orginal principle component function. 
+```{r}
+plot(PCA_PS_Ordinal_questions, main = "ScreePlot", type = "b")
+abline(h=1, col = "Red")
+```
+
+#Principle Component Score Plot (Median)
+Now to look at the PC scores for each country
+```{r, eval=F}
+plot(PS_Median_Scores[,3:4], type = "p", main = "Standarized Component Score Data")
+text(PS_Median_Scores[,3:4], labels = rownames(PS_Median_Scores), cex=0.7, adj =1.5)
+grid(10,10)
+```
+
+
+#Combining Principles Components for Regression Analysis
+Now we must pick compare all of the components to Renewable energy data. Let's start by making a data frame with all the component scores.
+
+
+```{r, eval=F}
+#Based on the scree plot, only principle components with variances over 1 were included in the comnined principle component list.
+PS_PC_Scores <- merge(PS_Median_Scores, PS_Mode_Scores[,1], by.x = "Country.Code", by.y= 0, all=TRUE)
+colnames(PS_PC_Scores) <-c("Country Code", "Country Name", "Median-PC1", "Median-PC2", "Mode-PC1")
+
+```
